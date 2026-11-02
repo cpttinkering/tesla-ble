@@ -11,6 +11,7 @@
 
 #include <memory>
 #include <functional>
+#include <deque>
 #include <queue>
 #include <vector>
 #include <string>
@@ -441,6 +442,10 @@ class Vehicle {
   std::function<void(const CarServer_SoftwareUpdateState &, const std::string &)> software_update_callback_;
   std::function<void(const ChargeScheduleList &)> charge_schedule_callback_;
   std::function<void(const PreconditionScheduleList &)> preconditioning_schedule_callback_;
+  // Raw schedule responses awaiting decode in loop() (bounded, cleared on disconnect).
+  static constexpr size_t MAX_PENDING_SCHEDULE_RESPONSES = 4;
+  std::deque<std::vector<pb_byte_t>> pending_schedule_responses_;
+  void process_pending_schedules_();
 
   bool is_connected_ = false;
   uint64_t connection_generation_ = 0;

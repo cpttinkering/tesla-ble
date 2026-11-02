@@ -1,5 +1,16 @@
 # Changelog
 
+## 6.5 (cpttinkering fork)
+
+### Fixed
+
+- Stack overflow (ESPHome loopTask, 8 KB) when a schedule response arrived:
+  schedule lists were decoded, and their callbacks run, inside the CarServer
+  message handler, on top of its ~2 KB `CarServer_Response`. Schedule
+  responses are now queued (heap, at most 4) and decoded/delivered from
+  `Vehicle::loop()`; the payload is only copied for responses that contain
+  schedule state, instead of for every response.
+
 ## 6.4 (cpttinkering fork)
 
 ### Added
