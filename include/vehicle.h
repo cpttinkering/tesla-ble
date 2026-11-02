@@ -241,6 +241,14 @@ class Vehicle {
       std::function<void(const CarServer_SoftwareUpdateState &, const std::string &)> cb) {
     software_update_callback_ = std::move(cb);
   }
+  // Charge / preconditioning (departure) schedules; lists are extracted from
+  // the raw response, see schedule_state.h.
+  void set_charge_schedule_state_callback(std::function<void(const ChargeScheduleList &)> cb) {
+    charge_schedule_callback_ = std::move(cb);
+  }
+  void set_preconditioning_schedule_state_callback(std::function<void(const PreconditionScheduleList &)> cb) {
+    preconditioning_schedule_callback_ = std::move(cb);
+  }
 
   // Actions report their outcome through on_complete (success / skipped /
   // failure with a rich CommandError). Pass nullptr when the result is not
@@ -267,6 +275,11 @@ class Vehicle {
   // Also included in every fifth infotainment_poll(); call directly for a manual refresh.
   void software_update_poll(bool force_wake = false);
   void software_update_poll(WakePolicy wake_policy);
+  // Not part of infotainment_poll(): schedules change rarely, poll on demand.
+  void charge_schedule_poll(bool force_wake = false);
+  void charge_schedule_poll(WakePolicy wake_policy);
+  void preconditioning_schedule_poll(bool force_wake = false);
+  void preconditioning_schedule_poll(WakePolicy wake_policy);
   // Start (or schedule, offset_sec seconds from now) the installation of a
   // downloaded update. The car downloads firmware itself; this cannot fetch it.
   void schedule_software_update(int offset_sec, Command::OperationResultCallback on_complete = nullptr);
@@ -426,6 +439,8 @@ class Vehicle {
   std::function<void(const CarServer_ClosuresState &)> closures_state_callback_;
   std::function<void(const CarServer_MediaState &, const MediaNowPlaying &)> media_state_callback_;
   std::function<void(const CarServer_SoftwareUpdateState &, const std::string &)> software_update_callback_;
+  std::function<void(const ChargeScheduleList &)> charge_schedule_callback_;
+  std::function<void(const PreconditionScheduleList &)> preconditioning_schedule_callback_;
 
   bool is_connected_ = false;
   uint64_t connection_generation_ = 0;

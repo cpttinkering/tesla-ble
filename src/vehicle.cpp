@@ -1218,11 +1218,15 @@ void TeslaBLE::Vehicle::handle_carserver_message_(const UniversalMessage_Routabl
   CarServer_Response response = CarServer_Response_init_default;
   MediaNowPlaying now_playing;
   std::string update_version;
+  // Raw plaintext is only kept when a schedule consumer is registered.
+  std::vector<pb_byte_t> plaintext;
+  const bool want_plaintext = charge_schedule_callback_ || preconditioning_schedule_callback_;
   int result = client_->parse_payload_car_server_response(
       const_cast<UniversalMessage_RoutableMessage_protobuf_message_as_bytes_t *>(
           &msg.payload.protobuf_message_as_bytes),
       nullptr, 0, UniversalMessage_MessageFault_E_MESSAGEFAULT_ERROR_NONE, msg.flags, &response, nullptr,
-      media_state_callback_ ? &now_playing : nullptr, software_update_callback_ ? &update_version : nullptr);
+      media_state_callback_ ? &now_playing : nullptr, software_update_callback_ ? &update_version : nullptr,
+      want_plaintext ? &plaintext : nullptr);
   if (result != 0) {
     LOG_ERROR("Failed to parse CarServer response: %d", result);
     return;
@@ -1249,6 +1253,29 @@ void TeslaBLE::Vehicle::handle_carserver_message_(const UniversalMessage_Routabl
     }
     if (generation == connection_generation_ && vd.has_software_update_state && software_update_callback_) {
       software_update_callback_(vd.software_update_state, update_version);
+    }
+    if (generation == connection_generation_ && vd.has_charge_schedule_state && charge_schedule_callback_) {
+      ChargeScheduleList schedules;
+      if (extract_charge_schedule_state(plaintext.data(), plaintext.size(), &schedules)) {
+        if (schedules.truncated) {
+          LOG_WARNING("Charge schedule list truncated to %u entries", static_cast<unsigned>(MAX_SCHEDULES));
+        }
+        charge_schedule_callback_(schedules);
+      } else {
+        LOG_ERROR("Failed to extract charge schedule state from response");
+      }
+    }
+    if (generation == connection_generation_ && vd.has_preconditioning_schedule_state &&
+        preconditioning_schedule_callback_) {
+      PreconditionScheduleList schedules;
+      if (extract_preconditioning_schedule_state(plaintext.data(), plaintext.size(), &schedules)) {
+        if (schedules.truncated) {
+          LOG_WARNING("Preconditioning schedule list truncated to %u entries", static_cast<unsigned>(MAX_SCHEDULES));
+        }
+        preconditioning_schedule_callback_(schedules);
+      } else {
+        LOG_ERROR("Failed to extract preconditioning schedule state from response");
+      }
     }
   }
   if (generation != connection_generation_) {
@@ -1618,6 +1645,23 @@ void TeslaBLE::Vehicle::software_update_poll(bool force_wake) {
 
 void TeslaBLE::Vehicle::software_update_poll(WakePolicy wake_policy) {
   send_infotainment_poll_("Software Update Poll", CarServer_GetVehicleData_getSoftwareUpdateState_tag, wake_policy);
+}
+
+void TeslaBLE::Vehicle::charge_schedule_poll(bool force_wake) {
+  charge_schedule_poll(wake_policy_from_bool(force_wake));
+}
+
+void TeslaBLE::Vehicle::charge_schedule_poll(WakePolicy wake_policy) {
+  send_infotainment_poll_("Charge Schedule Poll", CarServer_GetVehicleData_getChargeScheduleState_tag, wake_policy);
+}
+
+void TeslaBLE::Vehicle::preconditioning_schedule_poll(bool force_wake) {
+  preconditioning_schedule_poll(wake_policy_from_bool(force_wake));
+}
+
+void TeslaBLE::Vehicle::preconditioning_schedule_poll(WakePolicy wake_policy) {
+  send_infotainment_poll_("Preconditioning Schedule Poll", CarServer_GetVehicleData_getPreconditioningScheduleState_tag,
+                          wake_policy);
 }
 
 void TeslaBLE::Vehicle::schedule_software_update(int offset_sec, Command::OperationResultCallback on_complete) {

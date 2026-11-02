@@ -1,5 +1,22 @@
 # Changelog
 
+## 6.4 (cpttinkering fork)
+
+### Added
+
+- Charge and preconditioning (departure) schedules, read-only:
+  `Vehicle::charge_schedule_poll()` / `preconditioning_schedule_poll()` request
+  `GetChargeScheduleState` / `GetPreconditioningScheduleState`, and
+  `set_charge_schedule_state_callback()` /
+  `set_preconditioning_schedule_state_callback()` deliver the decoded lists.
+- `schedule_state.h`: `ChargeScheduleList` / `PreconditionScheduleList` and
+  `extract_charge_schedule_state()` / `extract_preconditioning_schedule_state()`.
+  The generated nanopb structs drop the repeated lists and names (callbacks), so
+  they are read from the raw response, bounded to `MAX_SCHEDULES` (16) entries
+  and `MAX_SCHEDULE_NAME_LENGTH` (32) bytes per name.
+- `Client::parse_payload_car_server_response()` takes an optional `plaintext`
+  out-parameter returning the decrypted `CarServer.Response` bytes.
+
 ## 6.0.0
 
 This release moves the shared host logic into the library and cleans up the

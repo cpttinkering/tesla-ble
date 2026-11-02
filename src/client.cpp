@@ -468,11 +468,213 @@ bool extract_software_update_version(const pb_byte_t *response, size_t length, s
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// Charge / preconditioning schedules
+//
+// The schedule lists (repeated) and names (string) are pb_callback_t in the
+// generated structs. The schedule-state submessage is decoded here as a
+// top-level struct, so its list callback can be set before pb_decode; each
+// list entry is then decoded with its own name callback. The "window" entry
+// lives in a oneof (callbacks cannot be preset there), so it is decoded
+// separately from the raw bytes of its field.
+// ---------------------------------------------------------------------------
+namespace {
+
+bool find_vehicle_data_field(const pb_byte_t *response, size_t length, uint32_t field, const pb_byte_t **out,
+                             size_t *out_length) {
+  if (!response) {
+    return false;
+  }
+  const pb_byte_t *vehicle_data = nullptr;
+  size_t vehicle_data_length = 0;
+  return find_wire_bytes(response, length, CarServer_Response_vehicleData_tag, &vehicle_data, &vehicle_data_length) &&
+         find_wire_bytes(vehicle_data, vehicle_data_length, field, out, out_length);
+}
+
+bool decode_bounded_string(pb_istream_t *stream, const pb_field_t * /*field*/, void **arg) {
+  auto *target = static_cast<std::string *>(*arg);
+  const size_t length = stream->bytes_left;
+  std::vector<pb_byte_t> buffer(length);
+  if (!pb_read(stream, buffer.data(), length)) {
+    return false;
+  }
+  *target = truncate_utf8(buffer.data(), length, MAX_SCHEDULE_NAME_LENGTH);
+  return true;
+}
+
+void copy_entry(const CarServer_ChargeSchedule &src, ChargeScheduleEntry *dst) {
+  dst->id = src.id;
+  dst->days_of_week = src.days_of_week;
+  dst->start_enabled = src.start_enabled;
+  dst->start_time = src.start_time;
+  dst->end_enabled = src.end_enabled;
+  dst->end_time = src.end_time;
+  dst->one_time = src.one_time;
+  dst->enabled = src.enabled;
+  dst->latitude = src.latitude;
+  dst->longitude = src.longitude;
+}
+
+void copy_entry(const CarServer_PreconditionSchedule &src, PreconditionScheduleEntry *dst) {
+  dst->id = src.id;
+  dst->days_of_week = src.days_of_week;
+  dst->precondition_time = src.precondition_time;
+  dst->one_time = src.one_time;
+  dst->enabled = src.enabled;
+  dst->latitude = src.latitude;
+  dst->longitude = src.longitude;
+}
+
+// Decodes one ChargeSchedule / PreconditionSchedule (including its name).
+template<typename PbType, typename Entry>
+bool decode_entry(pb_istream_t *stream, const pb_msgdesc_t *fields, PbType pb, Entry *entry) {
+  pb.name.funcs.decode = &decode_bounded_string;
+  pb.name.arg = &entry->name;
+  if (!pb_decode(stream, fields, &pb)) {
+    return false;
+  }
+  copy_entry(pb, entry);
+  return true;
+}
+
+template<typename PbType, typename Entry>
+bool decode_entry_bytes(const pb_byte_t *data, size_t length, const pb_msgdesc_t *fields, PbType pb, Entry *entry) {
+  pb_istream_t stream = pb_istream_from_buffer(data, length);
+  return decode_entry(&stream, fields, pb, entry);
+}
+
+// Appends one decoded list item, keeping at most MAX_SCHEDULES entries.
+template<typename List, typename Entry> void append_bounded(List *list, Entry &&entry) {
+  if (list->schedules.size() >= MAX_SCHEDULES) {
+    list->truncated = true;
+    return;
+  }
+  list->schedules.push_back(std::forward<Entry>(entry));
+}
+
+bool decode_charge_schedule_item(pb_istream_t *stream, const pb_field_t * /*field*/, void **arg) {
+  auto *list = static_cast<ChargeScheduleList *>(*arg);
+  ChargeScheduleEntry entry;
+  CarServer_ChargeSchedule pb = CarServer_ChargeSchedule_init_default;
+  if (!decode_entry(stream, CarServer_ChargeSchedule_fields, pb, &entry)) {
+    return false;
+  }
+  append_bounded(list, std::move(entry));
+  return true;
+}
+
+bool decode_precondition_schedule_item(pb_istream_t *stream, const pb_field_t * /*field*/, void **arg) {
+  auto *list = static_cast<PreconditionScheduleList *>(*arg);
+  PreconditionScheduleEntry entry;
+  CarServer_PreconditionSchedule pb = CarServer_PreconditionSchedule_init_default;
+  if (!decode_entry(stream, CarServer_PreconditionSchedule_fields, pb, &entry)) {
+    return false;
+  }
+  append_bounded(list, std::move(entry));
+  return true;
+}
+
+}  // namespace
+
+bool extract_charge_schedule_state(const pb_byte_t *response, size_t length, ChargeScheduleList *output) {
+  if (!output) {
+    return false;
+  }
+  *output = ChargeScheduleList();
+  const pb_byte_t *state = nullptr;
+  size_t state_length = 0;
+  if (!find_vehicle_data_field(response, length, CarServer_VehicleData_charge_schedule_state_tag, &state,
+                               &state_length)) {
+    return false;
+  }
+
+  CarServer_ChargeScheduleState pb = CarServer_ChargeScheduleState_init_default;
+  pb.charge_schedules.funcs.decode = &decode_charge_schedule_item;
+  pb.charge_schedules.arg = output;
+  pb_istream_t stream = pb_istream_from_buffer(state, state_length);
+  if (!pb_decode(&stream, CarServer_ChargeScheduleState_fields, &pb)) {
+    LOG_ERROR("[extract_charge_schedule_state] Decoding failed: %s", PB_GET_ERROR(&stream));
+    *output = ChargeScheduleList();
+    return false;
+  }
+
+  const pb_byte_t *window = nullptr;
+  size_t window_length = 0;
+  if (pb.which_optional_charge_schedule_window != 0 &&
+      find_wire_bytes(state, state_length, CarServer_ChargeScheduleState_charge_schedule_window_tag, &window,
+                      &window_length)) {
+    CarServer_ChargeSchedule window_pb = CarServer_ChargeSchedule_init_default;
+    output->has_window =
+        decode_entry_bytes(window, window_length, CarServer_ChargeSchedule_fields, window_pb, &output->window);
+  }
+  if (pb.which_optional_charge_buffer != 0) {
+    output->has_charge_buffer = true;
+    output->charge_buffer = pb.optional_charge_buffer.charge_buffer;
+  }
+  if (pb.which_optional_max_num_charge_schedules != 0) {
+    output->has_max_num_schedules = true;
+    output->max_num_schedules = pb.optional_max_num_charge_schedules.max_num_charge_schedules;
+  }
+  if (pb.which_optional_next_schedule != 0) {
+    output->has_next_schedule = true;
+    output->next_schedule = pb.optional_next_schedule.next_schedule;
+  }
+  if (pb.which_optional_show_schedule_complete_state != 0) {
+    output->has_show_schedule_complete_state = true;
+    output->show_schedule_complete_state = pb.optional_show_schedule_complete_state.show_schedule_complete_state;
+  }
+  return true;
+}
+
+bool extract_preconditioning_schedule_state(const pb_byte_t *response, size_t length,
+                                            PreconditionScheduleList *output) {
+  if (!output) {
+    return false;
+  }
+  *output = PreconditionScheduleList();
+  const pb_byte_t *state = nullptr;
+  size_t state_length = 0;
+  if (!find_vehicle_data_field(response, length, CarServer_VehicleData_preconditioning_schedule_state_tag, &state,
+                               &state_length)) {
+    return false;
+  }
+
+  CarServer_PreconditioningScheduleState pb = CarServer_PreconditioningScheduleState_init_default;
+  pb.precondition_schedules.funcs.decode = &decode_precondition_schedule_item;
+  pb.precondition_schedules.arg = output;
+  pb_istream_t stream = pb_istream_from_buffer(state, state_length);
+  if (!pb_decode(&stream, CarServer_PreconditioningScheduleState_fields, &pb)) {
+    LOG_ERROR("[extract_preconditioning_schedule_state] Decoding failed: %s", PB_GET_ERROR(&stream));
+    *output = PreconditionScheduleList();
+    return false;
+  }
+
+  const pb_byte_t *window = nullptr;
+  size_t window_length = 0;
+  if (pb.which_optional_preconditioning_schedule_window != 0 &&
+      find_wire_bytes(state, state_length, CarServer_PreconditioningScheduleState_preconditioning_schedule_window_tag,
+                      &window, &window_length)) {
+    CarServer_PreconditionSchedule window_pb = CarServer_PreconditionSchedule_init_default;
+    output->has_window =
+        decode_entry_bytes(window, window_length, CarServer_PreconditionSchedule_fields, window_pb, &output->window);
+  }
+  if (pb.which_optional_max_num_precondition_schedules != 0) {
+    output->has_max_num_schedules = true;
+    output->max_num_schedules = pb.optional_max_num_precondition_schedules.max_num_precondition_schedules;
+  }
+  if (pb.which_optional_next_schedule != 0) {
+    output->has_next_schedule = true;
+    output->next_schedule = pb.optional_next_schedule.next_schedule;
+  }
+  return true;
+}
+
 int Client::parse_payload_car_server_response(
     UniversalMessage_RoutableMessage_protobuf_message_as_bytes_t *input_buffer,
     Signatures_SignatureData *signature_data, pb_size_t which_sub_sig_data,
     UniversalMessage_MessageFault_E signed_message_fault, uint32_t response_flags, CarServer_Response *output,
-    uint32_t *response_counter, MediaNowPlaying *media_now_playing, std::string *software_update_version) {
+    uint32_t *response_counter, MediaNowPlaying *media_now_playing, std::string *software_update_version,
+    std::vector<pb_byte_t> *plaintext) {
   uint32_t counter = 0;
 
   // If encrypted, decrypt the payload
@@ -514,6 +716,9 @@ int Client::parse_payload_car_server_response(
         if (software_update_version) {
           extract_software_update_version(decrypt_buffer.bytes, decrypt_buffer.size, *software_update_version);
         }
+        if (plaintext) {
+          plaintext->assign(decrypt_buffer.bytes, decrypt_buffer.bytes + decrypt_buffer.size);
+        }
         break;
       }
       default:
@@ -532,6 +737,9 @@ int Client::parse_payload_car_server_response(
     }
     if (software_update_version) {
       extract_software_update_version(input_buffer->bytes, input_buffer->size, *software_update_version);
+    }
+    if (plaintext) {
+      plaintext->assign(input_buffer->bytes, input_buffer->bytes + input_buffer->size);
     }
   }
 

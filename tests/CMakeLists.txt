@@ -35,6 +35,7 @@ set(TEST_FILES
     test_logging.cpp
     test_message_building.cpp
     test_message_parsing.cpp
+    test_schedule_state.cpp
     test_message_processor.cpp
     test_polling_policy.cpp
     test_protocol_authentication.cpp

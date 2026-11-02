@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 #include <array>
 
 #include "crypto_context.h"
@@ -12,6 +13,7 @@
 #include "vcsec.pb.h"
 #include "keys.pb.h"
 #include "errors.h"
+#include "schedule_state.h"
 
 namespace TeslaBLE {
 /**
@@ -133,7 +135,8 @@ class Client {
                                         UniversalMessage_MessageFault_E signed_message_fault, uint32_t response_flags,
                                         CarServer_Response *output, uint32_t *response_counter = nullptr,
                                         MediaNowPlaying *media_now_playing = nullptr,
-                                        std::string *software_update_version = nullptr);
+                                        std::string *software_update_version = nullptr,
+                                        std::vector<pb_byte_t> *plaintext = nullptr);
 
   const pb_byte_t *get_last_request_hash(UniversalMessage_Domain domain, size_t *length) const;
   bool get_last_request_uuid(UniversalMessage_Domain domain, pb_byte_t *uuid, size_t *uuid_length) const;
